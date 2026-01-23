@@ -7,7 +7,7 @@ import "@openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.
 import "@openzeppelin-contracts-upgradeable/contracts/token/common/ERC2981Upgradeable.sol";
 
 
-contract MyNFT is 
+contract MyNFTUUPS is 
         Initializable,  
         ERC721URIStorageUpgradeable, 
         ERC2981Upgradeable,
@@ -44,8 +44,7 @@ contract MyNFT is
         __ERC721URIStorage_init();
         __ERC2981_init();
         __Ownable_init(msg.sender);
-        __UUPSUpgradeable_init();
-
+        
         _setDefaultRoyalty(royaltyReceiver, royaltyBps); // 设置默认版税信息
 
     }
@@ -53,7 +52,7 @@ contract MyNFT is
     // 铸造新的NFT,需要支付铸造费用
     function mint (
         address to,
-        string calldata tokenURI
+        string calldata uri
     ) external payable returns (uint256) {
         // 检查是否达到最大供应量
         require(_nextTokenId <= MAX_SUPPLY, "Max supply reached");
@@ -67,10 +66,10 @@ contract MyNFT is
         // 安全铸造NFT
         _safeMint(to, newItemId);
         // 设置Token URI
-        _setTokenURI(newItemId, tokenURI);
+        _setTokenURI(newItemId, uri);
 
         // 触发NFT铸造事件
-        emit NFTMinted(to, newItemId, tokenURI);
+        emit NFTMinted(to, newItemId, uri);
         return newItemId;
     }
 
@@ -109,26 +108,7 @@ contract MyNFT is
     function withdraw() external onlyOwner {
         uint256 balance = address(this).balance; 
         require(balance > 0, "No balance to withdraw");   
-        payable(owner()).transfer(balance);
+        (bool success, ) = payable(owner()).call{value: balance}("");
+        require(success, "Withdrawal failed");
     }
-
-    // NFT资产销毁，多重继承需重写
-    function _burn(uint256 tokenId) 
-        internal 
-        override(ERC721Upgradeable,ERC721URIStorageUpgradeable) {
-        super._burn(tokenId);
-    }
-    // 重写tokenURI函数，多重继承需重写
-    function tokenURI(uint256 tokenId)
-        public
-        view
-        override(
-            ERC721Upgradeable,
-            ERC721URIStorageUpgradeable
-        )
-        returns (string memory)
-    {
-        return super.tokenURI(tokenId);
-    }
-
 }
