@@ -1,0 +1,39 @@
+[profile.default]
+# 目录配置
+src = "src"
+out = "out"
+libs = ["lib"]
+# 编译配置
+solc = "0.8.29" # solidity 版本
+optimizer = true # 优化器开关参数
+optimizer_runs = 200 # 优化器运行次数
+code_size_limit = 256 # 字节码大小限制
+via_ir = false
+
+remappings = [
+   "@openzeppelin/=lib/openzeppelin-contracts/",
+   "@openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/", 
+   "@forge-std/=lib/forge-std/src/"
+]
+
+[profile.ci]
+optimizer_runs = 1
+
+[profile.production]
+optimizer_runs = 10000
+
+# RPC端点配置
+[rpc_endpoints] 
+sepolia = "${SEPLOLIA_RPC}"
+mainnet = "${MAINNET_RPC}"
+
+# Etherscan配置
+[etherscan] 
+sepolia = { key="${ETHERSCAN_API_KEY}" }
+mainnet = { key="${ETHERSCAN_API_KEY}" }
+
+
+
+
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
