@@ -26,7 +26,10 @@ contract NFTMarketplace {
     mapping(uint256 => Listing) public listings;
     uint256 public listingCount; // 挂单计数器
 
-
+    // 拍卖映射
+    mapping(uint256 => Auction) public auctions;
+    uint256 public auctionCounter;
+    
     // 事件：NFT上架
     event NFTListed(address indexed seller, uint256 indexed tokenId, uint256 price);
     // 事件：NFT下架
@@ -46,5 +49,7 @@ contract NFTMarketplace {
     event NFTAuctionEnded(address indexed winner, uint256 indexed tokenId, uint256 finalBidAmount); 
     // 事件：当NFT拍卖被d取消时触发
     event NFTAuctionCancelled(address indexed seller, uint256 indexed tokenId);
+
+
 
 }
