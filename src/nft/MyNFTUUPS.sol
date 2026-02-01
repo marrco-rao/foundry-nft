@@ -46,7 +46,7 @@ contract MyNFTUUPS is
         __Ownable_init(msg.sender);
         
         _setDefaultRoyalty(royaltyReceiver, royaltyBps); // 设置默认版税信息
-
+        mintPrice = 0.01 ether; // 设置默认铸造价格
     }
 
     // 铸造新的NFT,需要支付铸造费用
