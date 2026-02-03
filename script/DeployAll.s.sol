@@ -5,6 +5,8 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {DeployMyNFT} from "./DeployMyNFT.s.sol";
 import {DeployMarketplace} from "./DeployMarketplace.s.sol";
+import {MockWETH} from "../src/mocks/MockWETH.sol";
+import {MockV3Aggregator} from "../src/mocks/MockV3Aggregator.sol";
 
 /**
  * @title DeployAll
@@ -25,6 +27,14 @@ contract DeployAll is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
+        // 0. 部署 Mock WETH 和价格预言机（本地测试）
+        console.log("Step 0: Deploying Mock contracts...");
+        address weth = address(new MockWETH());
+        address priceFeed = address(new MockV3Aggregator(8, 2000 * 10**8)); // ETH = $2000
+        console.log("Mock WETH:", weth);
+        console.log("Mock Price Feed:", priceFeed);
+        console.log("Mock contracts deployed!\n");
+
         // 1. 部署NFT合约
         console.log("Step 1: Deploying NFT Contract...");
         DeployMyNFT nftDeployer = new DeployMyNFT();
@@ -41,7 +51,9 @@ contract DeployAll is Script {
         DeployMarketplace marketDeployer = new DeployMarketplace();
         (address marketProxy, address marketImpl) = marketDeployer.deployWithParams(
             250,      // 2.5% 平台手续费
-            deployer  // 手续费接收者
+            deployer, // 手续费接收者
+            weth,     // WETH 地址
+            priceFeed // 价格预言机地址
         );
         console.log("Marketplace deployed successfully!\n");
 
@@ -57,10 +69,14 @@ contract DeployAll is Script {
         console.log("\nMarketplace Contract:");
         console.log("  Proxy:", marketProxy);
         console.log("  Implementation:", marketImpl);
+        console.log("\nSupporting Contracts:");
+        console.log("  WETH:", weth);
+        console.log("  ETH/USD Price Feed:", priceFeed);
         console.log("\nConfiguration:");
         console.log("  Deployer:", deployer);
         console.log("  NFT Royalty: 2.5%");
         console.log("  Marketplace Fee: 2.5%");
+        console.log("  Supported Payments: ETH, WETH");
         console.log("========================================\n");
 
         // 4. 输出后续操作提示
@@ -68,6 +84,7 @@ contract DeployAll is Script {
         console.log("1. Verify contracts on block explorer");
         console.log("2. Test NFT minting");
         console.log("3. Approve marketplace to handle NFTs");
-        console.log("4. Test marketplace listing and purchase");
+        console.log("4. Test marketplace listing and purchase (ETH/WETH)");
+        console.log("5. Query USD prices using Chainlink oracle");
     }
 }

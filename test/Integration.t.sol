@@ -5,6 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {NFTMarketplaceUUPS} from "../src/nft-market/NFTMarketplaceUUPS.sol";
 import {MyNFTUUPS} from "../src/nft/MyNFTUUPS.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import "../src/interfaces/IPaymentToken.sol";
 
 /**
  * @title Integration Test Suite
@@ -63,7 +64,9 @@ contract IntegrationTest is Test {
         bytes memory marketInitData = abi.encodeWithSelector(
             NFTMarketplaceUUPS.initialize.selector,
             PLATFORM_FEE,
-            platformOwner
+            platformOwner,
+            address(0), // wethAddress - using zero for testing
+            address(0)  // ethUsdPriceFeed - using zero for testing
         );
         address marketProxy = address(new ERC1967Proxy(marketImpl, marketInitData));
         marketplace = NFTMarketplaceUUPS(marketProxy);
@@ -87,7 +90,7 @@ contract IntegrationTest is Test {
         uint256 listPrice = 1 ether;
         vm.startPrank(artist);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, listPrice);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, listPrice, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         console.log("  NFT listed for", listPrice);
         
@@ -119,7 +122,7 @@ contract IntegrationTest is Test {
         uint256 resalePrice = 2 ether;
         vm.startPrank(collector1);
         nft.approve(address(marketplace), 1);
-        uint256 resaleListingId = marketplace.listNFT(address(nft), 1, resalePrice);
+        uint256 resaleListingId = marketplace.listNFT(address(nft), 1, resalePrice, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         console.log("  NFT relisted for", resalePrice);
         
@@ -170,7 +173,7 @@ contract IntegrationTest is Test {
         for (uint256 i = 1; i <= 5; i++) {
             nft.approve(address(marketplace), i);
             uint256 price = i * 0.5 ether;
-            listingIds[i-1] = marketplace.listNFT(address(nft), i, price);
+            listingIds[i-1] = marketplace.listNFT(address(nft), i, price, IPaymentToken.PaymentMethod.ETH);
             console.log("  NFT", i, "listed for", price);
         }
         vm.stopPrank();
@@ -215,7 +218,7 @@ contract IntegrationTest is Test {
         
         vm.startPrank(artist);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, startingBid, duration);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, startingBid, duration, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         console.log("  Auction created with starting bid:", startingBid);
         
@@ -289,21 +292,21 @@ contract IntegrationTest is Test {
         
         vm.startPrank(artist);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, 1 ether);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, 1 ether, IPaymentToken.PaymentMethod.ETH);
         console.log("Listed NFT for: 1 ETH");
         
         // 更新价格
         marketplace.updateListingPrice(listingId, 2 ether);
         console.log("Updated price to: 2 ETH");
         
-        (,,, uint256 price,) = marketplace.getListing(listingId);
+        (,,, uint256 price,,) = marketplace.getListing(listingId);
         assertEq(price, 2 ether);
         
         // 再次更新
         marketplace.updateListingPrice(listingId, 0.5 ether);
         console.log("Updated price to: 0.5 ETH");
         
-        (,,, price,) = marketplace.getListing(listingId);
+        (,,, price,,) = marketplace.getListing(listingId);
         assertEq(price, 0.5 ether);
         
         // 取消挂单
@@ -311,7 +314,7 @@ contract IntegrationTest is Test {
         console.log("Delisted NFT");
         vm.stopPrank();
         
-        (,,,, bool isActive) = marketplace.getListing(listingId);
+        (,,,,, bool isActive) = marketplace.getListing(listingId);
         assertFalse(isActive);
         
         // NFT仍然属于艺术家
@@ -346,8 +349,8 @@ contract IntegrationTest is Test {
         nft.approve(address(marketplace), 1);
         nft2.approve(address(marketplace), 1);
         
-        uint256 listing1 = marketplace.listNFT(address(nft), 1, 1 ether);
-        uint256 listing2 = marketplace.listNFT(address(nft2), 1, 1.5 ether);
+        uint256 listing1 = marketplace.listNFT(address(nft), 1, 1 ether, IPaymentToken.PaymentMethod.ETH);
+        uint256 listing2 = marketplace.listNFT(address(nft2), 1, 1.5 ether, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         console.log("Listed NFTs from both collections");
@@ -374,7 +377,7 @@ contract IntegrationTest is Test {
         
         vm.startPrank(artist);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, 1 ether);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, 1 ether, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         console.log("Created listing before upgrade");
@@ -392,7 +395,7 @@ contract IntegrationTest is Test {
         assertEq(marketplace.platformFee(), PLATFORM_FEE);
         assertEq(marketplace.feeRecipient(), platformOwner);
         
-        (address seller,,, uint256 price, bool isActive) = marketplace.getListing(listingId);
+        (address seller,,, uint256 price,, bool isActive) = marketplace.getListing(listingId);
         assertEq(seller, artist);
         assertEq(price, 1 ether);
         assertTrue(isActive);
@@ -428,7 +431,7 @@ contract IntegrationTest is Test {
         vm.startPrank(artist);
         for (uint256 i = 1; i <= nftCount; i++) {
             nft.approve(address(marketplace), i);
-            marketplace.listNFT(address(nft), i, i * 0.1 ether);
+            marketplace.listNFT(address(nft), i, i * 0.1 ether, IPaymentToken.PaymentMethod.ETH);
         }
         vm.stopPrank();
         

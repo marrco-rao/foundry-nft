@@ -8,8 +8,14 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IERC2981} from "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import "../interfaces/IPaymentToken.sol";
+import "../interfaces/IWETH.sol";
 
-contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeable, ReentrancyGuard {
+contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeable, ReentrancyGuard, IPaymentToken {
+    using SafeERC20 for IERC20;
     // 这里可以添加NFT市场的功能，例如列出NFT、购买NFT等
     // NFT挂单结构体
     struct Listing {
@@ -17,6 +23,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         address nftContract;      // NFT合约地址
         uint256 tokenId; // NFT的Token ID   
         uint256 price;  // 售价（wei）
+        PaymentMethod paymentMethod; // 支付方式
         bool isActive;  // 挂单是否激活 
     }
 
@@ -29,6 +36,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         uint256 highestBid;  // 最高竞拍价（wei）
         address highestBidder; // 最高竞拍者地址
         uint256 endTime;     // 拍卖结束时间（时间戳）
+        PaymentMethod paymentMethod; // 支付方式
         bool isActive;       // 拍卖是否激活
     }
 
@@ -53,19 +61,30 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
 
     // 是否启用版税
     bool public royaltyEnabled;
+
+    // 支付代币地址
+    address public wethAddress;
+
+    // Chainlink 价格预言机
+    AggregatorV3Interface public ethUsdPriceFeed;
+
+    // 支持的支付方式映射
+    mapping(PaymentMethod => bool) public supportedPaymentMethods;
     
 
     // 事件：NFT上架
-    event NFTListed(address indexed seller, uint256 indexed tokenId, uint256 price);
+    event NFTListed(address indexed seller, uint256 indexed tokenId, uint256 price, PaymentMethod paymentMethod);
     // 事件：NFT下架
     event NFTDelisted(address indexed seller, uint256 indexed tokenId);
     // 事件：NFT售出
-    event NFTPurchased(address indexed buyer, uint256 indexed tokenId, uint256 price);
+    event NFTPurchased(address indexed buyer, uint256 indexed tokenId, uint256 price, PaymentMethod paymentMethod);
     // 事件：NFT价格更新
     event NFTListingPriceUpdated(address indexed seller, uint256 indexed tokenId, uint256 newPrice);
+    // 事件：价格查询（记录 USD 价格）
+    event PriceInUSD(uint256 indexed listingId, uint256 priceInWei, uint256 priceInUSD);
 
     // 事件：NFT拍卖上架
-    event NFTAuctionListed(address indexed seller, uint256 indexed tokenId, uint256 startingBid, uint256 endTime);
+    event NFTAuctionListed(address indexed seller, uint256 indexed tokenId, uint256 startingBid, uint256 endTime, PaymentMethod paymentMethod);
     // 事件：NFT拍卖下架
     event NFTAuctionDelisted(address indexed seller, uint256 indexed tokenId);
     // 事件：竞拍出价事件
@@ -81,13 +100,21 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
      */
     function initialize(
         uint256 _feeBps,
-        address _feeRecipient
+        address _feeRecipient,
+        address _wethAddress,
+        address _ethUsdPriceFeed
     ) public initializer {
         __Ownable_init(msg.sender);
 
         platformFee = _feeBps;
         feeRecipient = _feeRecipient;
         royaltyEnabled = true;
+        wethAddress = _wethAddress;
+        ethUsdPriceFeed = AggregatorV3Interface(_ethUsdPriceFeed);
+        
+        // 默认支持 ETH 和 WETH
+        supportedPaymentMethods[PaymentMethod.ETH] = true;
+        supportedPaymentMethods[PaymentMethod.WETH] = true;
     }
 
     /**
@@ -96,15 +123,18 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
     * @param nftContract NFT合约地址
     * @param tokenId NFT的Token ID
     * @param price 售价（wei）
+    * @param paymentMethod 支付方式（ETH 或 WETH）
      */
     function listNFT(
         address nftContract,
         uint256 tokenId,
-        uint256 price
+        uint256 price,
+        PaymentMethod paymentMethod
     ) external returns (uint256) {
         // 挂单逻辑
         require(price > 0, "Price must be greater than zero");
         require(nftContract != address(0),"Invalid NFT contract address");
+        require(isPaymentMethodSupported(paymentMethod), "Payment method not supported");
 
         IERC721 nft = IERC721(nftContract);
         require(nft.ownerOf(tokenId) == msg.sender, "Not the owner of the NFT");
@@ -116,9 +146,10 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
             nftContract: nftContract,
             tokenId: tokenId,
             price: price,
+            paymentMethod: paymentMethod,
             isActive: true
         });
-        emit NFTListed(msg.sender, tokenId, price);
+        emit NFTListed(msg.sender, tokenId, price, paymentMethod);
         return listingCount;
     }
 
@@ -152,7 +183,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
 
     /** 
     * @notice 购买已挂单的NFT
-    * @dev 处理NFT购买逻辑，包括支付和转移NFT
+    * @dev 处理NFT购买逻辑，包括支付和转移NFT，支持 ETH 和 WETH
     * @param nftContract NFT合约地址
     * @param listingId 挂单ID
      */
@@ -162,12 +193,20 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
     ) external payable nonReentrant{
         Listing storage listing = listings[listingId];
         require(listing.isActive, "Listing is not active");
-        require(msg.value >= listing.price, "Insufficient payment");  
         require(msg.sender != listing.seller, "Cannot buy your own NFT");
   
         IERC721 nft = IERC721(nftContract);
         // 确保卖家仍然拥有NFT
         require(nft.ownerOf(listing.tokenId) == listing.seller, "Seller no longer owns the NFT");
+
+        // 根据支付方式验证支付
+        if (listing.paymentMethod == PaymentMethod.ETH) {
+            require(msg.value >= listing.price, "Insufficient ETH payment");
+        } else if (listing.paymentMethod == PaymentMethod.WETH) {
+            require(msg.value == 0, "Should not send ETH for WETH payment");
+            require(IERC20(wethAddress).balanceOf(msg.sender) >= listing.price, "Insufficient WETH balance");
+            require(IERC20(wethAddress).allowance(msg.sender, address(this)) >= listing.price, "Insufficient WETH allowance");
+        }
 
         // 标记挂单为不活跃：先更新状态（CEI原则）
         listing.isActive = false;   
@@ -189,28 +228,35 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         nft.safeTransferFrom(listing.seller, msg.sender, listing.tokenId);
 
         // 资金分配：版税 -> 平台手续费 -> 卖家收益
+        if (listing.paymentMethod == PaymentMethod.ETH) {
+            // ETH 支付
+            if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                (bool success, ) = royaltyReceiver.call{value: royaltyAmount}("");
+                require(success, "Royalty transfer failed");
+            }
+            (bool feeSuccess, ) = feeRecipient.call{value: feeAmount}("");
+            require(feeSuccess, "Fee transfer failed");
 
-        // 如果有版税，转移版税给版税接收者（这里假设版税接收者是合约所有者）
-        if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-            (bool success, ) = royaltyReceiver.call{value: royaltyAmount}("");
-            require(success, "Royalty transfer failed");
+            (bool sellerSuccess, ) = listing.seller.call{value: sellerAmount}("");
+            require(sellerSuccess, "Seller transfer failed");
+
+            // 退还多余的 ETH
+            uint256 refund = msg.value - listing.price;
+            if (refund > 0) {
+                (bool refundSuccess, ) = msg.sender.call{value: refund}("");
+                require(refundSuccess, "Refund failed");
+            }
+        } else if (listing.paymentMethod == PaymentMethod.WETH) {
+            // WETH 支付
+            IERC20 weth = IERC20(wethAddress);
+            if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                weth.safeTransferFrom(msg.sender, royaltyReceiver, royaltyAmount);
+            }
+            weth.safeTransferFrom(msg.sender, feeRecipient, feeAmount);
+            weth.safeTransferFrom(msg.sender, listing.seller, sellerAmount);
         }
-        // 转移平台手续费给手续费接收地址
-        (bool feeSuccess, ) = feeRecipient.call{value: feeAmount}("");
-        require(feeSuccess, "Fee transfer failed");
 
-        // 转移以太币给卖家
-        (bool sellerSuccess, ) = listing.seller.call{value: sellerAmount}("");
-        require(sellerSuccess, "Seller transfer failed");
-
-        // 计算剩余的以太币退款给买家（如果有多付）
-        uint256 refund = msg.value - listing.price;
-        if (refund > 0) {
-            (bool refundSuccess, ) = msg.sender.call{value: refund}("");
-            require(refundSuccess, "Refund failed");
-        }   
-
-        emit NFTPurchased(msg.sender, listing.tokenId, listing.price);
+        emit NFTPurchased(msg.sender, listing.tokenId, listing.price, listing.paymentMethod);
     }
 
     /**
@@ -220,17 +266,20 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
     * @param tokenId NFT的Token ID
     * @param startingBid 起始竞拍价（wei）
     * @param durationHours 拍卖时长（小时）
+    * @param paymentMethod 支付方式（ETH 或 WETH）
     */ 
     function createAuction(
         address nftContract,
         uint256 tokenId,
         uint256 startingBid,
-        uint256 durationHours
+        uint256 durationHours,
+        PaymentMethod paymentMethod
     ) external returns (uint256) {
         // 拍卖逻辑
         require(startingBid > 0, "Starting bid must be greater than zero");
         require(durationHours >= 1, "Duration must be at least 1 hour");
         require(nftContract != address(0),"Invalid NFT contract address");
+        require(isPaymentMethodSupported(paymentMethod), "Payment method not supported");
 
         IERC721 nft = IERC721(nftContract);
         // 验证所有权
@@ -247,16 +296,17 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
             highestBid: 0,
             highestBidder: address(0),
             endTime: block.timestamp + (durationHours * 1 hours),
+            paymentMethod: paymentMethod,
             isActive: true
         });
-        emit NFTAuctionListed(msg.sender, tokenId, startingBid,auctions[auctionCounter].endTime);
+        emit NFTAuctionListed(msg.sender, tokenId, startingBid, auctions[auctionCounter].endTime, paymentMethod);
         return auctionCounter;
     }  
 
     /**
      * @dev 出价
      * @param auctionId 拍卖ID
-     * @notice 需要支付足够的ETH，出价必须高于当前最高出价的5%
+     * @notice 支持 ETH 和 WETH 出价，出价必须高于当前最高出价的5%
      */
     function placeBid(uint256 auctionId) external payable {
         Auction storage auction = auctions[auctionId];
@@ -271,19 +321,36 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         } else {
             minBid = auction.highestBid + (auction.highestBid / 20); // 最低出价需高于当前最高出价的5%
         }
-        require(msg.value >= minBid, "Bid too low");
 
-        // 如果有之前的最高出价者，记录待退款金额
+        uint256 bidAmount;
+        if (auction.paymentMethod == PaymentMethod.ETH) {
+            require(msg.value >= minBid, "ETH bid too low");
+            bidAmount = msg.value;
+        } else if (auction.paymentMethod == PaymentMethod.WETH) {
+            require(msg.value == 0, "Should not send ETH for WETH auction");
+            require(IERC20(wethAddress).balanceOf(msg.sender) >= minBid, "Insufficient WETH balance");
+            require(IERC20(wethAddress).allowance(msg.sender, address(this)) >= minBid, "Insufficient WETH allowance");
+            bidAmount = minBid;
+            
+            // 转移 WETH 到合约
+            IERC20(wethAddress).safeTransferFrom(msg.sender, address(this), bidAmount);
+        }
+
+        // 如果有之前的最高出价者，退还资金
         if (auction.highestBidder != address(0)) {
-            pendingReturns[auctionId][auction.highestBidder] += auction.highestBid;
+            if (auction.paymentMethod == PaymentMethod.ETH) {
+                pendingReturns[auctionId][auction.highestBidder] += auction.highestBid;
+            } else if (auction.paymentMethod == PaymentMethod.WETH) {
+                // 直接退还 WETH 给之前的最高出价者
+                IERC20(wethAddress).safeTransfer(auction.highestBidder, auction.highestBid);
+            }
         }
 
         // 更新最高出价和最高出价者
-        auction.highestBid = msg.value;
+        auction.highestBid = bidAmount;
         auction.highestBidder = msg.sender;
 
-        emit NFTAuctionBidPlaced(msg.sender, auction.tokenId, msg.value);
-
+        emit NFTAuctionBidPlaced(msg.sender, auction.tokenId, bidAmount);
     }
 
     // 提取出价退款
@@ -298,7 +365,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
 
     /** 
     * @notice 结束拍卖 
-    * @dev 只有拍卖卖家或合约所有者可以结束拍卖
+    * @dev 只有拍卖卖家或合约所有者可以结束拍卖，支持 ETH 和 WETH 支付
     * @param auctionId 拍卖ID
     * @param nftContract NFT合约地址
     */
@@ -329,17 +396,25 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
             uint256 sellerAmount = auction.highestBid - feeAmount - royaltyAmount;
 
             // 资金分配
-            // 转移版税
-            if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-                (bool success, ) = royaltyReceiver.call{value: royaltyAmount}("");
-                require(success, "Royalty transfer failed");
+            if (auction.paymentMethod == PaymentMethod.ETH) {
+                // ETH 支付
+                if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                    (bool success, ) = royaltyReceiver.call{value: royaltyAmount}("");
+                    require(success, "Royalty transfer failed");
+                }
+                (bool feeSuccess, ) = feeRecipient.call{value: feeAmount}("");
+                require(feeSuccess, "Fee transfer failed");
+                (bool sellerSuccess, ) = auction.seller.call{value: sellerAmount}("");
+                require(sellerSuccess, "Seller transfer failed");
+            } else if (auction.paymentMethod == PaymentMethod.WETH) {
+                // WETH 支付
+                IERC20 weth = IERC20(wethAddress);
+                if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                    weth.safeTransfer(royaltyReceiver, royaltyAmount);
+                }
+                weth.safeTransfer(feeRecipient, feeAmount);
+                weth.safeTransfer(auction.seller, sellerAmount);
             }
-            // 转移平台手续费
-            (bool feeSuccess, ) = feeRecipient.call{value: feeAmount}("");
-            require(feeSuccess, "Fee transfer failed");
-            // 转移卖家收益
-            (bool sellerSuccess, ) = auction.seller.call{value: sellerAmount}("");
-            require(sellerSuccess, "Seller transfer failed");
 
             emit NFTAuctionEnded(auction.highestBidder, auction.tokenId, auction.highestBid);
         } else {
@@ -377,6 +452,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
     * @return nftContract NFT合约地址
     * @return tokenId NFT的Token ID
     * @return price 售价（wei）
+    * @return paymentMethod 支付方式
     * @return isActive 挂单是否激活
      */
     function getListing(uint256 listingId) external view returns (
@@ -384,6 +460,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         address nftContract,
         uint256 tokenId,
         uint256 price,
+        PaymentMethod paymentMethod,
         bool isActive
     ) {
         Listing storage listing = listings[listingId];
@@ -392,6 +469,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
             listing.nftContract,
             listing.tokenId,
             listing.price,
+            listing.paymentMethod,
             listing.isActive
         );
     }
@@ -406,6 +484,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
     * @return highestBid 最高竞拍价（wei）
     * @return highestBidder 最高竞拍者地址
     * @return endTime 拍卖结束时间（时间戳）
+    * @return paymentMethod 支付方式
     * @return isActive 拍卖是否激活
      */
     function getAuction(uint256 auctionId) external view returns (
@@ -416,6 +495,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         uint256 highestBid,
         address highestBidder,
         uint256 endTime,
+        PaymentMethod paymentMethod,
         bool isActive
     ) {
         Auction storage auction = auctions[auctionId];
@@ -427,6 +507,7 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
             auction.highestBid,
             auction.highestBidder,
             auction.endTime,
+            auction.paymentMethod,
             auction.isActive
         );
     }   
@@ -493,5 +574,105 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
         require(_feeRecipient != address(0),"Invalid address");
         feeRecipient = _feeRecipient;
+    }
+
+    /**
+     * @notice 获取 ETH/USD 价格
+     * @dev 从 Chainlink 价格预言机获取最新价格
+     * @return price ETH/USD 价格（8位小数）
+     */
+    function getETHPrice() public view returns (uint256 price) {
+        (, int256 answer, , , ) = ethUsdPriceFeed.latestRoundData();
+        require(answer > 0, "Invalid price feed");
+        return uint256(answer);
+    }
+
+    /**
+     * @notice 获取挂单的 USD 价格
+     * @param listingId 挂单ID
+     * @return priceInUSD 价格（以美分计，2位小数）
+     */
+    function getListingPriceInUSD(uint256 listingId) external view returns (uint256 priceInUSD) {
+        Listing storage listing = listings[listingId];
+        require(listing.isActive, "Listing is not active");
+        
+        uint256 ethPrice = getETHPrice(); // 8 decimals
+        // listing.price 是 wei (18 decimals)
+        // 转换为 USD cents (2 decimals): (price * ethPrice) / 10^(18 + 8 - 2)
+        priceInUSD = (listing.price * ethPrice) / 1e24;
+        
+        return priceInUSD;
+    }
+
+    /**
+     * @notice 获取拍卖的 USD 价格
+     * @param auctionId 拍卖ID
+     * @return startingBidUSD 起始价格（美分）
+     * @return highestBidUSD 当前最高出价（美分）
+     */
+    function getAuctionPriceInUSD(uint256 auctionId) external view returns (
+        uint256 startingBidUSD,
+        uint256 highestBidUSD
+    ) {
+        Auction storage auction = auctions[auctionId];
+        require(auction.isActive, "Auction is not active");
+        
+        uint256 ethPrice = getETHPrice();
+        startingBidUSD = (auction.startingBid * ethPrice) / 1e24;
+        highestBidUSD = auction.highestBid > 0 ? (auction.highestBid * ethPrice) / 1e24 : 0;
+        
+        return (startingBidUSD, highestBidUSD);
+    }
+
+    // ========== IPaymentToken 接口实现 ==========
+
+    /**
+     * @notice 获取支付方式对应的代币地址
+     * @param method 支付方式
+     * @return 代币地址，ETH 返回 address(0)
+     */
+    function getPaymentTokenAddress(PaymentMethod method) external view override returns (address) {
+        if (method == PaymentMethod.ETH) {
+            return address(0);
+        } else if (method == PaymentMethod.WETH) {
+            return wethAddress;
+        }
+        return address(0);
+    }
+
+    /**
+     * @notice 检查支付方式是否支持
+     * @param method 支付方式
+     * @return 是否支持
+     */
+    function isPaymentMethodSupported(PaymentMethod method) public view override returns (bool) {
+        return supportedPaymentMethods[method];
+    }
+
+    /**
+     * @notice 设置支付方式支持状态（仅所有者）
+     * @param method 支付方式
+     * @param supported 是否支持
+     */
+    function setPaymentMethodSupported(PaymentMethod method, bool supported) external onlyOwner {
+        supportedPaymentMethods[method] = supported;
+    }
+
+    /**
+     * @notice 更新 WETH 地址（仅所有者）
+     * @param _wethAddress 新的 WETH 地址
+     */
+    function setWETHAddress(address _wethAddress) external onlyOwner {
+        require(_wethAddress != address(0), "Invalid WETH address");
+        wethAddress = _wethAddress;
+    }
+
+    /**
+     * @notice 更新价格预言机地址（仅所有者）
+     * @param _priceFeed 新的价格预言机地址
+     */
+    function setPriceFeed(address _priceFeed) external onlyOwner {
+        require(_priceFeed != address(0), "Invalid price feed address");
+        ethUsdPriceFeed = AggregatorV3Interface(_priceFeed);
     }
 }

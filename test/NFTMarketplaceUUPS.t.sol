@@ -5,6 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {NFTMarketplaceUUPS} from "../src/nft-market/NFTMarketplaceUUPS.sol";
 import {MyNFTUUPS} from "../src/nft/MyNFTUUPS.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import "../src/interfaces/IPaymentToken.sol";
 
 /**
  * @title NFTMarketplaceUUPS Test Suite
@@ -31,11 +32,11 @@ contract NFTMarketplaceUUPSTest is Test {
     uint256 public constant MINT_PRICE = 0.01 ether;
     
     // 事件声明
-    event NFTListed(address indexed seller, uint256 indexed tokenId, uint256 price);
+    event NFTListed(address indexed seller, uint256 indexed tokenId, uint256 price, IPaymentToken.PaymentMethod paymentMethod);
     event NFTDelisted(address indexed seller, uint256 indexed tokenId);
-    event NFTPurchased(address indexed buyer, uint256 indexed tokenId, uint256 price);
+    event NFTPurchased(address indexed buyer, uint256 indexed tokenId, uint256 price, IPaymentToken.PaymentMethod paymentMethod);
     event NFTListingPriceUpdated(address indexed seller, uint256 indexed tokenId, uint256 newPrice);
-    event NFTAuctionListed(address indexed seller, uint256 indexed tokenId, uint256 startingBid, uint256 endTime);
+    event NFTAuctionListed(address indexed seller, uint256 indexed tokenId, uint256 startingBid, uint256 endTime, IPaymentToken.PaymentMethod paymentMethod);
     event NFTAuctionBidPlaced(address indexed bidder, uint256 indexed tokenId, uint256 bidAmount);
     event NFTAuctionEnded(address indexed winner, uint256 indexed tokenId, uint256 finalBidAmount);
     event NFTAuctionCancelled(address indexed seller, uint256 indexed tokenId);
@@ -72,7 +73,9 @@ contract NFTMarketplaceUUPSTest is Test {
         bytes memory marketInitData = abi.encodeWithSelector(
             NFTMarketplaceUUPS.initialize.selector,
             PLATFORM_FEE_BPS,
-            feeRecipient
+            feeRecipient,
+            address(0), // wethAddress - using zero for testing
+            address(0)  // ethUsdPriceFeed - using zero for testing
         );
         marketProxy = address(new ERC1967Proxy(marketImpl, marketInitData));
         marketplace = NFTMarketplaceUUPS(marketProxy);
@@ -106,15 +109,15 @@ contract NFTMarketplaceUUPSTest is Test {
         nft.approve(address(marketplace), tokenId);
         
         vm.expectEmit(true, true, false, true);
-        emit NFTListed(seller, tokenId, NFT_PRICE);
+        emit NFTListed(seller, tokenId, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         
-        uint256 listingId = marketplace.listNFT(address(nft), tokenId, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), tokenId, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         assertEq(listingId, 1);
         assertEq(marketplace.listingCount(), 1);
         
-        (address lseller, address nftContract, uint256 ltokenId, uint256 price, bool isActive) 
+        (address lseller, address nftContract, uint256 ltokenId, uint256 price, IPaymentToken.PaymentMethod paymentMethod, bool isActive) 
             = marketplace.getListing(listingId);
         
         assertEq(lseller, seller);
@@ -127,14 +130,14 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_ListNFTWithoutApproval() public {
         vm.prank(seller);
         vm.expectRevert();
-        marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
     }
     
     function test_RevertWhen_ListNFTNotOwned() public {
         // buyer尝试上架seller拥有的NFT（tokenId=1）
         vm.startPrank(buyer);
         vm.expectRevert(); // 会因为ERC721InvalidApprover而失败
-        marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
     }
     
@@ -142,7 +145,7 @@ contract NFTMarketplaceUUPSTest is Test {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
         vm.expectRevert();
-        marketplace.listNFT(address(nft), 1, 0);
+        marketplace.listNFT(address(nft), 1, 0, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
     }
     
@@ -151,7 +154,7 @@ contract NFTMarketplaceUUPSTest is Test {
         
         for (uint256 i = 1; i <= 3; i++) {
             nft.approve(address(marketplace), i);
-            marketplace.listNFT(address(nft), i, NFT_PRICE + (i * 0.1 ether));
+            marketplace.listNFT(address(nft), i, NFT_PRICE + (i * 0.1 ether), IPaymentToken.PaymentMethod.ETH);
         }
         
         vm.stopPrank();
@@ -165,7 +168,7 @@ contract NFTMarketplaceUUPSTest is Test {
         // 先上架
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         
         vm.expectEmit(true, true, false, false);
         emit NFTDelisted(seller, 1);
@@ -173,14 +176,14 @@ contract NFTMarketplaceUUPSTest is Test {
         marketplace.delistNFT(listingId);
         vm.stopPrank();
         
-        (,,, , bool isActive) = marketplace.getListing(listingId);
+        (,,,, , bool isActive) = marketplace.getListing(listingId);
         assertFalse(isActive);
     }
     
     function test_RevertWhen_DelistNFTNotSeller() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
@@ -191,7 +194,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_DelistInactiveListing() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         marketplace.delistNFT(listingId);
         
         // 尝试再次下架
@@ -207,7 +210,7 @@ contract NFTMarketplaceUUPSTest is Test {
         
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         
         vm.expectEmit(true, true, false, true);
         emit NFTListingPriceUpdated(seller, 1, newPrice);
@@ -215,14 +218,14 @@ contract NFTMarketplaceUUPSTest is Test {
         marketplace.updateListingPrice(listingId, newPrice);
         vm.stopPrank();
         
-        (,,, uint256 price,) = marketplace.getListing(listingId);
+        (,,, uint256 price,,) = marketplace.getListing(listingId);
         assertEq(price, newPrice);
     }
     
     function test_RevertWhen_UpdatePriceNotSeller() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
@@ -233,7 +236,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_UpdatePriceToZero() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.expectRevert();
         marketplace.updateListingPrice(listingId, 0);
         vm.stopPrank();
@@ -245,7 +248,7 @@ contract NFTMarketplaceUUPSTest is Test {
         // 上架NFT
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         uint256 sellerBalanceBefore = seller.balance;
@@ -255,7 +258,7 @@ contract NFTMarketplaceUUPSTest is Test {
         // 购买NFT
         vm.prank(buyer);
         vm.expectEmit(true, true, false, true);
-        emit NFTPurchased(buyer, 1, NFT_PRICE);
+        emit NFTPurchased(buyer, 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         marketplace.purchaseNFT{value: NFT_PRICE}(address(nft), listingId);
         
         // 验证所有权转移
@@ -271,14 +274,14 @@ contract NFTMarketplaceUUPSTest is Test {
         assertEq(royaltyReceiver.balance - royaltyReceiverBalanceBefore, royaltyFee);
         
         // 验证挂单状态
-        (,,, , bool isActive) = marketplace.getListing(listingId);
+        (,,,, , bool isActive) = marketplace.getListing(listingId);
         assertFalse(isActive);
     }
     
     function test_PurchaseWithExcessPayment() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         uint256 excess = 0.5 ether;
@@ -294,7 +297,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_PurchaseInsufficientPayment() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
@@ -305,7 +308,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_PurchaseOwnNFT() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         
         vm.expectRevert();
         marketplace.purchaseNFT{value: NFT_PRICE}(address(nft), listingId);
@@ -315,7 +318,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_PurchaseInactiveListing() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         marketplace.delistNFT(listingId);
         vm.stopPrank();
         
@@ -335,9 +338,9 @@ contract NFTMarketplaceUUPSTest is Test {
         nft.approve(address(marketplace), tokenId);
         
         vm.expectEmit(true, true, false, false);
-        emit NFTAuctionListed(seller, tokenId, startingBid, block.timestamp + duration * 1 hours);
+        emit NFTAuctionListed(seller, tokenId, startingBid, block.timestamp + duration * 1 hours, IPaymentToken.PaymentMethod.ETH);
         
-        uint256 auctionId = marketplace.createAuction(address(nft), tokenId, startingBid, duration);
+        uint256 auctionId = marketplace.createAuction(address(nft), tokenId, startingBid, duration, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         assertEq(auctionId, 1);
@@ -347,14 +350,14 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_CreateAuctionWithoutApproval() public {
         vm.prank(seller);
         vm.expectRevert();
-        marketplace.createAuction(address(nft), 1, 0.5 ether, 24);
+        marketplace.createAuction(address(nft), 1, 0.5 ether, 24, IPaymentToken.PaymentMethod.ETH);
     }
     
     function test_RevertWhen_CreateAuctionZeroBid() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
         vm.expectRevert();
-        marketplace.createAuction(address(nft), 1, 0, 24);
+        marketplace.createAuction(address(nft), 1, 0, 24, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
     }
     
@@ -362,7 +365,7 @@ contract NFTMarketplaceUUPSTest is Test {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
         vm.expectRevert();
-        marketplace.createAuction(address(nft), 1, 0.5 ether, 0);
+        marketplace.createAuction(address(nft), 1, 0.5 ether, 0, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
     }
     
@@ -375,7 +378,7 @@ contract NFTMarketplaceUUPSTest is Test {
         
         vm.startPrank(seller);
         nft.approve(address(marketplace), tokenId);
-        uint256 auctionId = marketplace.createAuction(address(nft), tokenId, startingBid, 24);
+        uint256 auctionId = marketplace.createAuction(address(nft), tokenId, startingBid, 24, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         // 出价
@@ -385,7 +388,7 @@ contract NFTMarketplaceUUPSTest is Test {
         marketplace.placeBid{value: startingBid}(auctionId);
         
         // 验证出价信息
-        (,,,, uint256 highestBid, address highestBidder,,) = marketplace.auctions(auctionId);
+        (,,,, uint256 highestBid, address highestBidder,,,) = marketplace.auctions(auctionId);
         assertEq(highestBidder, buyer);
         assertEq(highestBid, startingBid);
     }
@@ -393,7 +396,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_PlaceHigherBid() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         address bidder1 = makeAddr("bidder1");
@@ -416,7 +419,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_WithdrawBidRefund() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         address bidder1 = makeAddr("bidder1");
@@ -442,7 +445,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_BidTooLow() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
@@ -453,7 +456,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_BidAfterAuctionEnded() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 1);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 1, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         // 时间前进25小时
@@ -467,7 +470,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_SellerCannotBid() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24, IPaymentToken.PaymentMethod.ETH);
         vm.expectRevert();
         marketplace.placeBid{value: 0.5 ether}(auctionId);
         vm.stopPrank();
@@ -478,7 +481,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_EndAuction() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 1);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 1, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
@@ -504,7 +507,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_RevertWhen_EndAuctionBeforeTime() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24);
+        uint256 auctionId = marketplace.createAuction(address(nft), 1, 0.5 ether, 24, IPaymentToken.PaymentMethod.ETH);
         vm.expectRevert();
         marketplace.endAuction(auctionId, address(nft));
         vm.stopPrank();
@@ -514,10 +517,10 @@ contract NFTMarketplaceUUPSTest is Test {
         vm.startPrank(seller);
         
         nft.approve(address(marketplace), 1);
-        uint256 listing1 = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listing1 = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         
         nft.approve(address(marketplace), 1);
-        marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         
         marketplace.delistNFT(listing1);
         
@@ -579,7 +582,7 @@ contract NFTMarketplaceUUPSTest is Test {
         // 这个测试确保purchaseNFT有nonReentrant修饰符
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
@@ -596,7 +599,7 @@ contract NFTMarketplaceUUPSTest is Test {
         vm.startPrank(seller);
         for (uint256 i = 1; i <= 3; i++) {
             nft.approve(address(marketplace), i);
-            marketplace.listNFT(address(nft), i, NFT_PRICE + (i * 0.1 ether));
+            marketplace.listNFT(address(nft), i, NFT_PRICE + (i * 0.1 ether), IPaymentToken.PaymentMethod.ETH);
         }
         vm.stopPrank();
         
@@ -611,7 +614,7 @@ contract NFTMarketplaceUUPSTest is Test {
         nft.approve(address(marketplace), 1);
         
         uint256 gasBefore = gasleft();
-        marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         uint256 gasUsed = gasBefore - gasleft();
         
         console.log("Gas used for listing:", gasUsed);
@@ -621,7 +624,7 @@ contract NFTMarketplaceUUPSTest is Test {
     function test_GasCostOfPurchase() public {
         vm.startPrank(seller);
         nft.approve(address(marketplace), 1);
-        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE);
+        uint256 listingId = marketplace.listNFT(address(nft), 1, NFT_PRICE, IPaymentToken.PaymentMethod.ETH);
         vm.stopPrank();
         
         vm.prank(buyer);
