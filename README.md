@@ -126,12 +126,17 @@ make deploy-local
 ### 测试网部署（Sepolia）
 
 ```bash
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 设置 PRIVATE_KEY 和 SEPOLIA_RPC
+# 创建并配置 .env
+# PRIVATE_KEY=...
+# SEPOLIA_RPC=...
+# ETHERSCAN_API_KEY=...
+source .env
 
 # 部署
 make deploy-sepolia
+
+# 或直接使用端点别名
+forge script script/DeployAll.s.sol:DeployAll --rpc-url sepolia --broadcast --verify -vvvv
 ```
 
 详细部署指南: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)

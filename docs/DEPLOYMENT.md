@@ -38,6 +38,10 @@ forge script script/DeployMarketplace.s.sol:DeployMarketplace --rpc-url <RPC_URL
 - 部署到新的测试网或主网
 - 需要完整的NFT + Marketplace生态
 
+**网络行为说明**：
+- Mainnet/Sepolia：自动使用链上真实 WETH 和 Chainlink ETH/USD Feed 地址
+- 本地或其他测试链：自动部署 MockWETH 和 MockV3Aggregator
+
 **运行命令**：
 ```bash
 forge script script/DeployAll.s.sol:DeployAll --rpc-url <RPC_URL> --broadcast --verify
@@ -60,6 +64,8 @@ MAINNET_RPC=https://eth-mainnet.g.alchemy.com/v2/your-api-key
 ETHERSCAN_API_KEY=你的etherscan-api-key
 ```
 
+> 注意：`foundry.toml` 中 Sepolia 端点变量名为 `SEPOLIA_RPC`。
+
 加载环境变量：
 ```bash
 source .env
@@ -77,8 +83,16 @@ cast balance <你的地址> --rpc-url $SEPOLIA_RPC
 
 #### 方式1：部署所有合约
 ```bash
+# 写法A：直接使用环境变量
 forge script script/DeployAll.s.sol:DeployAll \
   --rpc-url $SEPOLIA_RPC \
+  --broadcast \
+  --verify \
+  -vvvv
+
+# 写法B：使用 foundry.toml 里的端点别名
+forge script script/DeployAll.s.sol:DeployAll \
+  --rpc-url sepolia \
   --broadcast \
   --verify \
   -vvvv
@@ -136,6 +150,16 @@ forge script script/DeployAll.s.sol:DeployAll \
 make anvil-quick
 ```
 
+## DeployAll 网络地址策略
+
+部署 `DeployAll.s.sol` 时，会按 `chainId` 自动选择依赖地址：
+
+- `1`（Mainnet）：使用主网 WETH 与主网 ETH/USD Feed
+- `11155111`（Sepolia）：使用 Sepolia WETH 与 Sepolia ETH/USD Feed
+- 其他 chainId：部署 MockWETH 与 MockV3Aggregator
+
+这保证了在 Sepolia 不会误用 Mock 地址。
+
 ## 部署后验证
 
 ### 1. 验证NFT合约
@@ -158,6 +182,19 @@ cast call <MARKETPLACE_PROXY_ADDRESS> "platformFee()(uint256)" --rpc-url $SEPOLI
 # 获取手续费接收地址
 cast call <MARKETPLACE_PROXY_ADDRESS> "feeRecipient()(address)" --rpc-url $SEPOLIA_RPC
 ```
+
+## 部署后必须记录的信息
+
+建议把以下信息写入你的部署记录（如 Notion/表格/JSON）：
+
+- 网络信息：`chainId`、RPC 提供商
+- 部署账户：EOA 地址
+- NFT：Proxy 地址、Implementation 地址
+- Marketplace：Proxy 地址、Implementation 地址
+- 依赖地址：WETH、ETH/USD Price Feed
+- 部署交易哈希：每个创建交易的 tx hash
+
+说明：日常交互与业务调用应使用 Proxy 地址，Implementation 地址主要用于升级和审计追踪。
 
 ## 部署架构说明
 

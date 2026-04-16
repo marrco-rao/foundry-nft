@@ -194,12 +194,12 @@ forge script script/DeployAll.s.sol --broadcast
 ```bash
 # 设置环境变量
 export PRIVATE_KEY=0x...
-export SEPLOLIA_RPC=https://...
+export SEPOLIA_RPC=https://...
 export ETHERSCAN_API_KEY=...
 
 # 部署到 Sepolia
 forge script script/DeployMarketplace.s.sol \
-  --rpc-url $SEPLOLIA_RPC \
+    --rpc-url $SEPOLIA_RPC \
   --broadcast \
   --verify
 ```

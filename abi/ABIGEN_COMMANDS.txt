@@ -1,0 +1,3 @@
+# Run these in your go-eth project (or from this repo):
+abigen --abi abi/MyNFTUUPS.abi.json --pkg mynft --type MyNFT --out abi/mynft.go
+abigen --abi abi/NFTMarketplaceUUPS.abi.json --pkg market --type Marketplace --out abi/marketplace.go

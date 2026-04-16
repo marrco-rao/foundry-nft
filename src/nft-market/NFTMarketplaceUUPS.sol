@@ -209,52 +209,15 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         }
 
         // 标记挂单为不活跃：先更新状态（CEI原则）
-        listing.isActive = false;   
-
-        // 计算平台手续费
-        uint256 feeAmount = (listing.price * platformFee) / 10000;
-        
-        // 获取版税信息
-        (address royaltyReceiver, uint256 royaltyAmount) = _getRoyaltyInfo(
-            listing.nftContract,
-            listing.tokenId,
-            listing.price
-        );
-
-        // 计算卖家应得金额
-        uint256 sellerAmount = listing.price - feeAmount - royaltyAmount;   
+        listing.isActive = false;
 
         // 转移NFT给买家
-        nft.safeTransferFrom(listing.seller, msg.sender, listing.tokenId);
+        address seller = listing.seller;
+        nft.safeTransferFrom(seller, msg.sender, listing.tokenId);
 
-        // 资金分配：版税 -> 平台手续费 -> 卖家收益
-        if (listing.paymentMethod == PaymentMethod.ETH) {
-            // ETH 支付
-            if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-                (bool success, ) = royaltyReceiver.call{value: royaltyAmount}("");
-                require(success, "Royalty transfer failed");
-            }
-            (bool feeSuccess, ) = feeRecipient.call{value: feeAmount}("");
-            require(feeSuccess, "Fee transfer failed");
-
-            (bool sellerSuccess, ) = listing.seller.call{value: sellerAmount}("");
-            require(sellerSuccess, "Seller transfer failed");
-
-            // 退还多余的 ETH
-            uint256 refund = msg.value - listing.price;
-            if (refund > 0) {
-                (bool refundSuccess, ) = msg.sender.call{value: refund}("");
-                require(refundSuccess, "Refund failed");
-            }
-        } else if (listing.paymentMethod == PaymentMethod.WETH) {
-            // WETH 支付
-            IERC20 weth = IERC20(wethAddress);
-            if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-                weth.safeTransferFrom(msg.sender, royaltyReceiver, royaltyAmount);
-            }
-            weth.safeTransferFrom(msg.sender, feeRecipient, feeAmount);
-            weth.safeTransferFrom(msg.sender, listing.seller, sellerAmount);
-        }
+        // 资金分配（含退还多余ETH）
+        uint256 ethRefund = listing.paymentMethod == PaymentMethod.ETH ? msg.value - listing.price : 0;
+        _distributePayment(listing.nftContract, listing.tokenId, listing.price, listing.paymentMethod, seller, msg.sender, ethRefund);
 
         emit NFTPurchased(msg.sender, listing.tokenId, listing.price, listing.paymentMethod);
     }
@@ -379,42 +342,10 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
 
         if (auction.highestBidder != address(0)) {
             // 有人出价，转移NFT给最高竞拍者
-            IERC721 nft = IERC721(nftContract);
-            nft.safeTransferFrom(auction.seller, auction.highestBidder, auction.tokenId);
+            IERC721(nftContract).safeTransferFrom(auction.seller, auction.highestBidder, auction.tokenId);
 
-            // 计算平台手续费
-            uint256 feeAmount = (auction.highestBid * platformFee) / 10000;
-
-            // 获取版税信息
-            (address royaltyReceiver, uint256 royaltyAmount) = _getRoyaltyInfo(
-                nftContract,
-                auction.tokenId,
-                auction.highestBid
-            );
-
-            // 计算卖家应得金额
-            uint256 sellerAmount = auction.highestBid - feeAmount - royaltyAmount;
-
-            // 资金分配
-            if (auction.paymentMethod == PaymentMethod.ETH) {
-                // ETH 支付
-                if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-                    (bool success, ) = royaltyReceiver.call{value: royaltyAmount}("");
-                    require(success, "Royalty transfer failed");
-                }
-                (bool feeSuccess, ) = feeRecipient.call{value: feeAmount}("");
-                require(feeSuccess, "Fee transfer failed");
-                (bool sellerSuccess, ) = auction.seller.call{value: sellerAmount}("");
-                require(sellerSuccess, "Seller transfer failed");
-            } else if (auction.paymentMethod == PaymentMethod.WETH) {
-                // WETH 支付
-                IERC20 weth = IERC20(wethAddress);
-                if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-                    weth.safeTransfer(royaltyReceiver, royaltyAmount);
-                }
-                weth.safeTransfer(feeRecipient, feeAmount);
-                weth.safeTransfer(auction.seller, sellerAmount);
-            }
+            // 资金分配（无需退还多余ETH，WETH从合约内转）
+            _distributePayment(nftContract, auction.tokenId, auction.highestBid, auction.paymentMethod, auction.seller, address(0), 0);
 
             emit NFTAuctionEnded(auction.highestBidder, auction.tokenId, auction.highestBid);
         } else {
@@ -537,6 +468,62 @@ contract NFTMarketplaceUUPS is Initializable, UUPSUpgradeable, OwnableUpgradeabl
         } else {
             receiver = address(0);
             royaltyAmount = 0;
+        }
+    }
+
+    /**
+     * @dev 统一资金分配：计算并转移版税、手续费、卖家收益
+     * @param nftContract NFT合约地址（用于版税查询）
+     * @param tokenId Token ID
+     * @param amount 总金额
+     * @param method 支付方式
+     * @param seller 卖家地址
+     * @param buyer WETH 购买时从 buyer 拉取资金；ETH/拍卖场景传 address(0) 则从合约余额支出
+     * @param ethRefund 购买时多余的 ETH 退还金额（仅 ETH 支付 purchaseNFT 场景）
+     */
+    function _distributePayment(
+        address nftContract,
+        uint256 tokenId,
+        uint256 amount,
+        PaymentMethod method,
+        address seller,
+        address buyer,
+        uint256 ethRefund
+    ) private {
+        uint256 feeAmount = (amount * platformFee) / 10000;
+        (address royaltyReceiver, uint256 royaltyAmount) = _getRoyaltyInfo(nftContract, tokenId, amount);
+        uint256 sellerAmount = amount - feeAmount - royaltyAmount;
+
+        if (method == PaymentMethod.ETH) {
+            if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                (bool ok,) = royaltyReceiver.call{value: royaltyAmount}("");
+                require(ok, "Royalty transfer failed");
+            }
+            (bool ok2,) = feeRecipient.call{value: feeAmount}("");
+            require(ok2, "Fee transfer failed");
+            (bool ok3,) = seller.call{value: sellerAmount}("");
+            require(ok3, "Seller transfer failed");
+            if (ethRefund > 0) {
+                (bool ok4,) = buyer.call{value: ethRefund}("");
+                require(ok4, "Refund failed");
+            }
+        } else if (method == PaymentMethod.WETH) {
+            IERC20 weth = IERC20(wethAddress);
+            if (buyer != address(0)) {
+                // purchaseNFT：从 buyer 拉取 WETH
+                if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                    weth.safeTransferFrom(buyer, royaltyReceiver, royaltyAmount);
+                }
+                weth.safeTransferFrom(buyer, feeRecipient, feeAmount);
+                weth.safeTransferFrom(buyer, seller, sellerAmount);
+            } else {
+                // endAuction：合约已持有 WETH
+                if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+                    weth.safeTransfer(royaltyReceiver, royaltyAmount);
+                }
+                weth.safeTransfer(feeRecipient, feeAmount);
+                weth.safeTransfer(seller, sellerAmount);
+            }
         }
     }
 

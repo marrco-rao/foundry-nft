@@ -13,3 +13,4 @@ out/
 
 # Dotenv file
 .env
+*.log

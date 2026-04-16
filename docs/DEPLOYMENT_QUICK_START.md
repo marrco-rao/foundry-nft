@@ -26,7 +26,7 @@ make anvil-test
 |------|------|---------|
 | `DeployMyNFT.s.sol` | 仅部署NFT合约 | 单独部署/测试NFT功能 |
 | `DeployMarketplace.s.sol` | 仅部署市场合约 | 单独部署/测试市场功能 |
-| `DeployAll.s.sol` | 部署完整生态 | 一次性部署所有合约 |
+| `DeployAll.s.sol` | 部署完整生态 | 一次性部署所有合约（按链自动选真实地址或 Mock） |
 
 ## ✅ 推荐方案：分开编写
 
@@ -56,8 +56,13 @@ forge script script/DeployMarketplace.s.sol:DeployMarketplace \
 ### 选项B：一键部署（适合快速测试）
 
 ```bash
+# 方式1：环境变量
 forge script script/DeployAll.s.sol:DeployAll \
   --rpc-url $SEPOLIA_RPC --broadcast --verify
+
+# 方式2：端点别名（foundry.toml）
+forge script script/DeployAll.s.sol:DeployAll \
+  --rpc-url sepolia --broadcast --verify
 ```
 
 ## 📋 部署前检查清单
@@ -131,13 +136,23 @@ cast call <MARKET_PROXY> "feeRecipient()(address)" --rpc-url $SEPOLIA_RPC
 A: 灵活性更高，可以单独升级，Market可以支持多个NFT集合。
 
 **Q: DeployAll和分开部署有什么区别？**  
-A: DeployAll只是把两个脚本组合起来，方便快速测试。生产环境建议分开。
+A: DeployAll 现在会按 chainId 自动处理依赖地址：在 Mainnet/Sepolia 使用真实 WETH + Chainlink，其他网络自动部署 Mock。分开部署仍然更灵活，适合精细化发布。
 
 **Q: 如何升级合约？**  
 A: 使用UUPS模式，只需部署新的实现合约，然后调用`upgradeTo`函数。
 
 **Q: 部署成本是多少？**  
 A: 在Sepolia测试网约0.025 ETH，主网取决于gas价格。
+
+## 🗂️ 部署后记录清单（建议）
+
+- 网络：chainId、RPC 提供商
+- NFT：Proxy、Implementation
+- Marketplace：Proxy、Implementation
+- 依赖：WETH、ETH/USD Feed
+- 部署交易哈希：部署与验证相关 tx
+
+日常调用请使用 Proxy 地址；Implementation 地址用于升级与审计追踪。
 
 ## 📚 相关文档
 

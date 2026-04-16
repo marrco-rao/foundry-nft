@@ -7,8 +7,7 @@ libs = ["lib"]
 solc = "0.8.29" # solidity 版本
 optimizer = true # 优化器开关参数
 optimizer_runs = 200 # 优化器运行次数
-code_size_limit = 256 # 字节码大小限制
-via_ir = false
+via_ir = true # 启用 Yul IR 优化器，有效减小字节码体积
 
 remappings = [
    "@openzeppelin/=lib/openzeppelin-contracts/",
@@ -25,7 +24,7 @@ optimizer_runs = 10000
 
 # RPC端点配置
 [rpc_endpoints] 
-sepolia = "${SEPLOLIA_RPC}"
+sepolia = "${SEPOLIA_RPC}"
 mainnet = "${MAINNET_RPC}"
 
 # Etherscan配置
